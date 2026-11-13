@@ -871,12 +871,45 @@ console.log("AVATAR UPLOAD SUCCESS:",avatarPath);
  }
 }
 
-function saveProfile(){
- if(!currentProfile)return;const nickname=document.getElementById("nicknameInput").value.trim();
- try{localStorage.setItem(profileKey(),JSON.stringify({nickname,picture:profileImageData}));loadProfile();msg("profileMessage","Your profile has been saved on this device.")}
- catch(e){msg("profileMessage","Could not save picture. Try a smaller image.",true)}
-}
+async function saveProfile(){
+ if(!currentProfile)return;
 
+ const nickname=document.getElementById("nicknameInput").value.trim();
+ const button=document.querySelector("#profile .primary");
+ if(button)button.disabled=true;
+
+ try{
+  if(selectedAvatarFile){
+   const avatarPath=currentProfile.id+"/"+Date.now()+"_"+cleanFileName(selectedAvatarFile.name);
+
+   const {error:uploadError}=await db.storage.from("avatars").upload(
+    avatarPath,
+    selectedAvatarFile,
+    {upsert:false,contentType:selectedAvatarFile.type}
+   );
+
+   if(uploadError)throw uploadError;
+
+   const {error:saveError}=await db.rpc("save_my_avatar_path",{
+    p_path:avatarPath
+   });
+
+   if(saveError)throw saveError;
+
+   selectedAvatarFile=null;
+   document.getElementById("profileImageInput").value="";
+  }
+
+  localStorage.setItem(profileKey(),JSON.stringify({nickname}));
+  await loadProfile();
+  msg("profileMessage","Your profile has been saved successfully!");
+ }catch(e){
+  console.error("PROFILE SAVE ERROR:",e);
+  msg("profileMessage","Could not save profile: "+e.message,true);
+ }finally{
+  if(button)button.disabled=false;
+ }
+}
 /* CLASS VIDEOS: LOAD SHARED VIDEOS */
 async function loadMedia(){
  const list=document.getElementById("mediaList");
