@@ -746,26 +746,131 @@ async function deleteSubjectNote(id){
  try{const {error}=await db.from("subject_notes").delete().eq("id",id).eq("subject",selectedSubject);if(error)throw error;await loadSubjectNotes()}catch(e){alert("Could not delete lesson: "+e.message)}
 }
 
-/* STUDENT PROFILE */
-function profileKey(){return currentProfile?"newform4_profile_"+currentProfile.id:""}
-function loadProfile(){
+
+let selectedAvatarFile = null;
+
+function profileKey(){
+ return currentProfile ? "newform4_profile_" + currentProfile.id : "";
+}
+
+async function loadProfile(){
  if(!currentProfile)return;
- let saved={};try{saved=JSON.parse(localStorage.getItem(profileKey())||"{}")}catch(e){}
- profileImageData=saved.picture||"";
+
+ let saved={};
+ try{
+  saved=JSON.parse(localStorage.getItem(profileKey())||"{}");
+ }catch(e){}
+
  document.getElementById("profileOfficialName").textContent=currentProfile.full_name;
  document.getElementById("profileNicknameDisplay").textContent=saved.nickname?"@"+saved.nickname:"Add your nickname";
  document.getElementById("nicknameInput").value=saved.nickname||"";
  document.getElementById("welcomeNickname").textContent=saved.nickname?"@"+saved.nickname:"";
+
+ profileImageData="";
+
+ try{
+  const {data,error}=await db.from("profiles")
+   .select("avatar_path")
+   .eq("id",currentProfile.id)
+   .single();
+
+  if(error)throw error;
+
+  if(data.avatar_path){
+   const {data:link,error:linkError}=await db.storage
+    .from("avatars")
+    .createSignedUrl(data.avatar_path,3600);
+
+   if(linkError)throw linkError;
+   profileImageData=link.signedUrl;
+  }
+ }catch(e){
+  console.warn("Profile picture could not be loaded:",e);
+ }
+
  document.getElementById("profilePicture").src=profileImageData||"";
  document.getElementById("profilePicture").style.display=profileImageData?"block":"none";
- document.getElementById("smallAvatar").innerHTML=profileImageData?'<img src="'+profileImageData+'" alt="Profile">':"👤"
+
+ document.getElementById("smallAvatar").innerHTML=profileImageData
+  ?'<img src="'+profileImageData+'" alt="Profile">'
+  :"👤";
 }
+
 document.getElementById("profileImageInput").addEventListener("change",function(){
- const file=this.files?.[0];if(!file)return;
- if(!file.type.startsWith("image/")){msg("profileMessage","Please choose an image file.",true);return}
- if(file.size>2*1024*1024){msg("profileMessage","Choose an image smaller than 2 MB.",true);this.value="";return}
- const reader=new FileReader();reader.onload=()=>{profileImageData=reader.result;document.getElementById("profilePicture").src=profileImageData;document.getElementById("profilePicture").style.display="block";document.getElementById("smallAvatar").innerHTML='<img src="'+profileImageData+'" alt="Profile">'};reader.readAsDataURL(file)
+ const file=this.files?.[0];
+ if(!file)return;
+
+ if(!file.type.startsWith("image/")){
+  msg("profileMessage","Please choose an image.",true);
+  return;
+ }
+
+ if(file.size>2*1024*1024){
+  msg("profileMessage","Choose an image smaller than 2 MB.",true);
+  this.value="";
+  return;
+ }
+
+ selectedAvatarFile=file;
+
+ const reader=new FileReader();
+ reader.onload=()=>{
+  document.getElementById("profilePicture").src=reader.result;
+  document.getElementById("profilePicture").style.display="block";
+ };
+ reader.readAsDataURL(file);
 });
+
+async function saveProfile(){
+ if(!currentProfile)return;
+
+ const nickname=document.getElementById("nicknameInput").value.trim();
+ const button=document.querySelector("#profile .primary");
+ if(button)button.disabled=true;
+
+ try{
+  let avatarPath=null;
+
+  if(selectedAvatarFile){
+   avatarPath=currentProfile.id+"/"+Date.now()+"_"+cleanFileName(selectedAvatarFile.name);
+
+   const {error:uploadError}=await db.storage.from("avatars").upload(
+    avatarPath,
+    selectedAvatarFile,
+    {upsert:false,contentType:selectedAvatarFile.type}
+   );
+
+  if(uploadError){
+  console.error("AVATAR UPLOAD ERROR:",uploadError);
+  throw uploadError;
+}
+console.log("AVATAR UPLOAD SUCCESS:",avatarPath);
+
+   const {error:saveError}=await db.rpc("save_my_avatar_path",{
+    p_path:avatarPath
+   });
+
+   console.log("AVATAR PATH SAVE ERROR:",saveError);if(saveError){
+    await db.storage.from("avatars").remove([avatarPath]);
+    throw saveError;
+   }
+
+   selectedAvatarFile=null;
+   document.getElementById("profileImageInput").value="";
+  }
+
+  localStorage.setItem(profileKey(),JSON.stringify({nickname}));
+
+  await loadProfile();
+  msg("profileMessage","Your profile has been saved successfully!");
+ }catch(e){
+  console.error(e);
+  msg("profileMessage","Could not save your profile: "+e.message,true);
+ }finally{
+  if(button)button.disabled=false;
+ }
+}
+
 function saveProfile(){
  if(!currentProfile)return;const nickname=document.getElementById("nicknameInput").value.trim();
  try{localStorage.setItem(profileKey(),JSON.stringify({nickname,picture:profileImageData}));loadProfile();msg("profileMessage","Your profile has been saved on this device.")}
@@ -1201,10 +1306,41 @@ function updateBadges(){
  const chat=Object.values(chatUnread).reduce((a,b)=>a+b,0);
  setBadge("chatBarCount",chat);setBadge("bellCount",chat+newItemCount)
 }
+
 async function loadClassmates(){
- const {data,error}=await db.from("profiles").select("id,full_name,role").eq("status","approved").order("full_name").limit(300);
+ const {data,error}=await db.from("profiles")
+  .select("id,full_name,role,avatar_path")
+  .eq("status","approved")
+  .order("full_name")
+  .limit(300);
+
  if(error)throw error;
- classmates=data||[];classmates.forEach(p=>profileNames[p.id]=p.full_name);
+
+ classmates=data||[];
+ classmates.forEach(p=>{
+  profileNames[p.id]=p.full_name;
+ });
+
+ const paths=classmates
+  .filter(p=>p.avatar_path)
+  .map(p=>p.avatar_path);
+
+ if(paths.length){
+  const {data:links,error:linkError}=await db.storage
+   .from("avatars")
+   .createSignedUrls(paths,3600);
+
+  if(!linkError){
+   (links||[]).forEach(link=>{
+    const person=classmates.find(p=>p.avatar_path===link.path);
+    if(person&&link.signedUrl){
+     person.avatarUrl=link.signedUrl;
+    }
+   });
+  }
+   console.log("Avatar links:", links);
+console.log("Avatar link error:", linkError);
+ }
 }
 function roomTitle(r){return r.type==="group"?(r.name||"Group"):(profileNames[r.otherId]||"Classmate")}
 async function fetchRooms(){
@@ -1334,7 +1470,7 @@ async function openChat(id){
  pageHistory.push("chatRoom");showPage("chatRoom");
  const box=document.getElementById("chatMessages");box.innerHTML="<p class='small'>Loading messages...</p>";
  try{
-  if(!classmates.length)await loadClassmates();
+ await loadClassmates();
   const {data:c,error:ce}=await db.from("conversations").select("id,type,name").eq("id",id).single();if(ce)throw ce;
   currentRoomType=c.type;
   let title=c.name||"Group";
@@ -1352,18 +1488,49 @@ async function openChat(id){
   markRoomRead(id)
  }catch(e){console.error(e);box.innerHTML="<p class='error'>Could not open this chat: "+escapeHTML(e.message)+"</p>"}
 }
+
 function appendMessage(m){
  const box=document.getElementById("chatMessages");
+
  if(box.querySelector('[data-id="'+m.id+'"]'))return;
- const empty=document.getElementById("chatEmpty");if(empty)empty.remove();
+
+ const empty=document.getElementById("chatEmpty");
+ if(empty)empty.remove();
+
  const mine=m.sender_id===currentProfile.id;
- const d=document.createElement("div");d.className="bubble"+(mine?" me":"");d.dataset.id=m.id;
- const who=(!mine&&currentRoomType==="group")?'<span class="who">'+escapeHTML(profileNames[m.sender_id]||"Classmate")+"</span>":"";
- d.innerHTML=who+escapeHTML(m.body)+'<span class="when">'+escapeHTML(new Date(m.created_at).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}))+"</span>";
+ const person=classmates.find(p=>p.id===m.sender_id);
+ const name=mine?"You":(person?.full_name||"Classmate");
+ const picture=person?.avatarUrl||"";
+
+ const d=document.createElement("div");
+ d.className="bubble"+(mine?" me":"");
+ d.dataset.id=m.id;
+
+ const avatar=picture
+  ?'<img src="'+escapeHTML(picture)+'" alt="Profile" style="width:36px;height:36px;border-radius:50%;object-fit:cover">'
+  :'<div style="width:36px;height:36px;border-radius:50%;background:#236B48;color:white;display:flex;align-items:center;justify-content:center">'+escapeHTML(name.charAt(0).toUpperCase())+'</div>';
+
+ const who=(!mine&&currentRoomType==="group")
+  ?'<span class="who">'+escapeHTML(name)+'</span>'
+  :"";
+
+ d.innerHTML=
+  '<div style="display:flex;align-items:flex-end;gap:8px">'+
+   (mine?"":avatar)+
+   '<div style="max-width:85%;min-width:0">'+
+    who+
+    '<div>'+escapeHTML(m.body)+'</div>'+
+    '<span class="when">'+escapeHTML(new Date(m.created_at).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}))+'</span>'+
+   '</div>'+
+   (mine?avatar:"")+
+  '</div>';
+
  const nearBottom=box.scrollHeight-box.scrollTop-box.clientHeight<120;
  box.appendChild(d);
- if(nearBottom||mine)box.scrollTop=box.scrollHeight
+
+ if(nearBottom||mine)box.scrollTop=box.scrollHeight;
 }
+
 async function sendChatMessage(event){
  event.preventDefault();
  const input=document.getElementById("chatInput"),body=input.value.trim();
