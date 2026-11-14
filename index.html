@@ -833,7 +833,8 @@ async function saveProfile(){
 
   if(selectedAvatarFile){
    avatarPath=currentProfile.id+"/"+Date.now()+"_"+cleanFileName(selectedAvatarFile.name);
-
+const {data:sessionData}=await db.auth.getSession();
+alert(sessionData.session ? "Login session found" : "No login session found");
    const {error:uploadError}=await db.storage.from("avatars").upload(
     avatarPath,
     selectedAvatarFile,
