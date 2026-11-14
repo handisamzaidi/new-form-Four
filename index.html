@@ -888,7 +888,11 @@ async function saveProfile(){
     {upsert:false,contentType:selectedAvatarFile.type}
    );
 
-   if(uploadError)throw uploadError;
+  if(uploadError){
+ console.error("AVATAR UPLOAD ERROR:",uploadError);
+ alert(JSON.stringify(uploadError));
+ throw uploadError;
+}
 
    const {error:saveError}=await db.rpc("save_my_avatar_path",{
     p_path:avatarPath
